@@ -9,6 +9,28 @@ Core DocuBot class responsible for:
 
 import os
 import glob
+import re
+
+# Very common words that appear in almost every document.
+# They don't help tell documents apart, so we skip them when scoring.
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "be", "to", "of", "in", "on",
+    "for", "and", "or", "it", "this", "that", "with", "as", "by", "at",
+    "do", "does", "i", "my", "how", "what", "where", "which", "when",
+    "who", "can", "should", "there", "from", "if", "any",
+}
+
+
+def tokenize(text):
+    """
+    Lowercase the text and split it into words.
+    Letters, digits, and underscores count as part of a word, so
+    'generate_access_token' stays one word, while punctuation like
+    '?', '.', '`', '/' is dropped.
+    Example: "Where is the auth token?" -> ["where", "is", "the", "auth", "token"]
+    """
+    return re.findall(r"[a-z0-9_]+", text.lower())
+
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -64,7 +86,12 @@ class DocuBot:
         ignore punctuation if needed.
         """
         index = {}
-        # TODO: implement simple indexing
+        for filename, text in documents:
+            # set() so each word is recorded once per file, even if it repeats
+            for word in set(tokenize(text)):
+                if word not in index:
+                    index[word] = []
+                index[word].append(filename)
         return index
 
     # -----------------------------------------------------------
@@ -81,8 +108,20 @@ class DocuBot:
         - Count how many appear in the text
         - Return the count as the score
         """
-        # TODO: implement scoring
-        return 0
+        # The meaningful words from the question (no stopwords, no duplicates)
+        query_words = set(tokenize(query)) - STOPWORDS
+
+        # Count every word in the document once, up front
+        word_counts = {}
+        for word in tokenize(text):
+            word_counts[word] = word_counts.get(word, 0) + 1
+
+        # Score = total number of times the query words show up in the text.
+        # A doc that mentions "token" 15 times beats one that mentions it once.
+        score = 0
+        for word in query_words:
+            score += word_counts.get(word, 0)
+        return score
 
     def retrieve(self, query, top_k=3):
         """
@@ -91,8 +130,27 @@ class DocuBot:
 
         Return a list of (filename, text) sorted by score descending.
         """
-        results = []
-        # TODO: implement retrieval logic
+        # Step 1: use the index to find candidate files that contain
+        # at least one meaningful query word (skip files with no overlap)
+        query_words = set(tokenize(query)) - STOPWORDS
+        candidates = set()
+        for word in query_words:
+            for filename in self.index.get(word, []):
+                candidates.add(filename)
+
+        # Step 2: score each candidate
+        scored = []
+        for filename, text in self.documents:
+            if filename in candidates:
+                score = self.score_document(query, text)
+                if score > 0:
+                    scored.append((score, filename, text))
+
+        # Step 3: highest score first
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        # Return (filename, text) pairs, as the rest of the code expects
+        results = [(filename, text) for score, filename, text in scored]
         return results[:top_k]
 
     # -----------------------------------------------------------
